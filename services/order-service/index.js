@@ -2,11 +2,15 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
+const AWS = require("aws-sdk");
 const { query, initDB } = require("./db");
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// Initialize EventBridge
+const eventbridge = new AWS.EventBridge({ region: process.env.AWS_REGION || 'us-east-1' });
 
 // Initialize Database
 initDB();
@@ -23,8 +27,7 @@ app.post("/orders", async (req, res) => {
   try {
     const { userId, productId, quantity } = req.body;
 
-    // 1. Validate product exists and get price (Mock call to Product Service)
-    // In a real scenario, we'd use internal service-to-service auth
+    // 1. Validate product exists and get price
     let product;
     try {
       const response = await axios.get(`${process.env.PRODUCT_SERVICE_URL}/products/${productId}`);
@@ -43,9 +46,25 @@ app.post("/orders", async (req, res) => {
 
     const order = result.rows[0];
 
-    // 3. Publish Event (Mocking EventBridge for now)
-    console.log(`[EVENT] OrderCreated: ${JSON.stringify(order)}`);
-    // TODO: Integrate with AWS EventBridge
+    // 3. Publish Event to EventBridge
+    const params = {
+      Entries: [
+        {
+          Source: 'com.cloudretail.order',
+          DetailType: 'OrderCreated',
+          Detail: JSON.stringify(order),
+          EventBusName: process.env.EVENT_BUS_NAME || 'default',
+        },
+      ],
+    };
+
+    try {
+      await eventbridge.putEvents(params).promise();
+      console.log(`[EVENT] OrderCreated published to EventBridge: ${order.id}`);
+    } catch (eventError) {
+      console.error("[ERROR] Failed to publish event to EventBridge:", eventError);
+      // We don't fail the request here, but in production you'd use a DLQ or retry pattern
+    }
 
     res.status(201).json(order);
   } catch (error) {

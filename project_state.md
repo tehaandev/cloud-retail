@@ -26,9 +26,15 @@
 - [x] **Step 8.3:** Created Pages: Home (Catalog), Login, Register, Checkout.
 - [x] **Step 8.4:** Integrated Frontend with Backend APIs (IAM, Product, Order).
 
+## Phase 4: Infrastructure & Reliability [IN PROGRESS]
+
+- [x] **Step 9.1:** Initialized AWS CDK project in `infrastructure/cdk`.
+- [x] **Step 9.2:** Defined `CdkStack` with VPC, ECS Cluster, and Fargate Services for all 4 microservices.
+- [x] **Step 9.3:** Added API Gateway (REST) routing to service Load Balancers.
+- [x] **Step 9.4:** Added EventBridge EventBus and Rule for async Order -> Inventory sync.
+
 ## Immediate Next Steps (To-Do)
 
-1.  **API Gateway Integration:** Set up an entry point (e.g., Nginx or a simple Node.js Gateway) to route requests to appropriate services.
-2.  **Event-Driven Architecture:** Implement a real message broker (e.g., LocalStack EventBridge or RabbitMQ) to replace the current mock/log events.
-3.  **Testing Suite:** Implement integration tests using `Supertest` to verify cross-service workflows (Order -> Inventory sync).
-4.  **Security Hardening:** Add JWT verification middleware to Product, Order, and Inventory services.
+1.  **Event Integration in Code:** Update `order-service` to actually publish to EventBridge (currently logs) and `inventory-service` to consume.
+2.  **Testing:** Add integration tests for the full flow.
+3.  **Final Report:** Draft the architectural documentation based on the CDK code.
