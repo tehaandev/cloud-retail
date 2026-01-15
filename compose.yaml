@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: cloud-retail-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: cloudretail
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  iam-service:
+    build:
+      context: ./services/iam-service
+    container_name: iam-service
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DATABASE_URL=postgres://user:password@postgres:5432/cloudretail
+      - JWT_SECRET=aa08be854a13974a2af8f34f378cf5383cbee0925f54a49bb18b6155679d72f9
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
