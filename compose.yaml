@@ -11,6 +11,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
 
   iam-service:
     build:
@@ -20,8 +21,55 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - DATABASE_URL=postgres://user:password@postgres:5432/cloudretail
-      - JWT_SECRET=aa08be854a13974a2af8f34f378cf5383cbee0925f54a49bb18b6155679d72f9
+      - DATABASE_URL=postgres://user:password@postgres:5432/iam_db
+      - JWT_SECRET=supersecretkey
+    depends_on:
+      - postgres
+
+  dynamodb-local:
+    image: amazon/dynamodb-local
+    container_name: dynamodb-local
+    ports:
+      - "8000:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb"
+
+  product-service:
+    build:
+      context: ./services/product-service
+    container_name: product-service
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - AWS_REGION=us-east-1
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - AWS_ACCESS_KEY_ID=fakeMyKeyId
+      - AWS_SECRET_ACCESS_KEY=fakeSecretAccessKey
+    depends_on:
+      - dynamodb-local
+
+  order-service:
+    build:
+      context: ./services/order-service
+    container_name: order-service
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - DATABASE_URL=postgres://user:password@postgres:5432/order_db
+      - PRODUCT_SERVICE_URL=http://product-service:3002
+    depends_on:
+      - postgres
+
+  inventory-service:
+    build:
+      context: ./services/inventory-service
+    container_name: inventory-service
+    ports:
+      - "3004:3004"
+    environment:
+      - PORT=3004
+      - DATABASE_URL=postgres://user:password@postgres:5432/inventory_db
     depends_on:
       - postgres
 
