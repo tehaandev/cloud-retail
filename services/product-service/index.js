@@ -9,7 +9,26 @@ app.use(express.json());
 app.use(cors());
 
 // Initialize Database
-initDB();
+initDB().then(async () => {
+  // Check if products exist, if not seed some
+  try {
+     const data = await docClient.scan({ TableName: TABLE_NAME }).promise();
+     if (data.Items.length === 0) {
+       console.log("Seeding initial products...");
+       const seeds = [
+         { id: uuidv4(), name: "Cloud Hanger", description: "Keeps your clothes floating.", price: 19.99, stock: 100 },
+         { id: uuidv4(), name: "Serverless Mug", description: "Holds infinite coffee (stateless).", price: 12.50, stock: 50 },
+         { id: uuidv4(), name: "Kubernetes Kube", description: "A complex puzzle toy.", price: 45.00, stock: 20 },
+       ];
+       for (const item of seeds) {
+         await docClient.put({ TableName: TABLE_NAME, Item: item }).promise();
+       }
+       console.log("Seeding complete.");
+     }
+  } catch (err) {
+    console.error("Error seeding data:", err);
+  }
+});
 
 // --- ROUTES ---
 

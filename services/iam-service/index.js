@@ -9,9 +9,6 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Initialize Database
-initDB();
-
 // --- HELPER FUNCTIONS ---
 const generateToken = (user) => {
   return jwt.sign(
@@ -34,7 +31,9 @@ app.post("/auth/register", async (req, res) => {
     const { email, password } = req.body;
 
     // Check if user exists
-    const userCheck = await query("SELECT * FROM users WHERE email = $1", [email]);
+    const userCheck = await query("SELECT * FROM users WHERE email = $1", [
+      email,
+    ]);
     if (userCheck.rows.length > 0) {
       return res.status(400).json({ message: "User already exists" });
     }
@@ -49,9 +48,9 @@ app.post("/auth/register", async (req, res) => {
       [email, hashedPassword, "customer"]
     );
 
-    res.status(201).json({ 
+    res.status(201).json({
       message: "User registered successfully",
-      user: result.rows[0]
+      user: result.rows[0],
     });
   } catch (error) {
     console.error(error);
@@ -67,7 +66,7 @@ app.post("/auth/login", async (req, res) => {
     // Find user
     const result = await query("SELECT * FROM users WHERE email = $1", [email]);
     const user = result.rows[0];
-    
+
     if (!user) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
@@ -94,6 +93,7 @@ app.post("/auth/login", async (req, res) => {
 // --- SERVER START ---
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
+  initDB();
   console.log(`IAM Service running on port ${PORT}`);
 });
 
