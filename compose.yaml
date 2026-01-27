@@ -73,5 +73,22 @@ services:
     depends_on:
       - postgres
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_IAM_API_URL=http://localhost:3001
+        - VITE_PRODUCT_API_URL=http://localhost:3002
+        - VITE_ORDER_API_URL=http://localhost:3003
+    container_name: frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - iam-service
+      - product-service
+      - order-service
+      - inventory-service
+
 volumes:
   postgres_data:
