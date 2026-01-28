@@ -14,12 +14,7 @@ RUN npm ci
 # Copy source code
 COPY . .
 
-# Accept build arguments for API URLs
-ARG VITE_IAM_API_URL
-ARG VITE_PRODUCT_API_URL
-ARG VITE_ORDER_API_URL
-
-# Build the application
+# Build the application (API URLs are injected at runtime, not build time)
 RUN npm run build
 
 # Stage 2: Production server with nginx
@@ -27,6 +22,10 @@ FROM nginx:1.29.4-alpine AS production
 
 # Copy custom nginx configuration
 COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy entrypoint script that generates runtime config
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Create nginx config for SPA routing
 RUN echo 'server { \
@@ -55,5 +54,5 @@ EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost/ || exit 1
 
-# Start nginx
-CMD ["nginx", "-g", "daemon off;"]
+# Use entrypoint script to generate runtime config and start nginx
+ENTRYPOINT ["/entrypoint.sh"]

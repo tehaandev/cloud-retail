@@ -1,13 +1,30 @@
 import axios from "axios";
 
-// API base URLs configured via environment variables
-// Falls back to localhost for local development
+// Extend Window interface for runtime config
+declare global {
+  interface Window {
+    ENV?: {
+      VITE_IAM_API_URL?: string;
+      VITE_PRODUCT_API_URL?: string;
+      VITE_ORDER_API_URL?: string;
+    };
+  }
+}
+
+// API base URLs configured via runtime environment (env-config.js)
+// Falls back to Vite env vars for local dev, then to localhost
 const IAM_BASE_URL =
-  import.meta.env.VITE_IAM_API_URL || "http://localhost:3001";
+  window.ENV?.VITE_IAM_API_URL ||
+  import.meta.env.VITE_IAM_API_URL ||
+  "http://localhost:3001";
 const PRODUCT_BASE_URL =
-  import.meta.env.VITE_PRODUCT_API_URL || "http://localhost:3002";
+  window.ENV?.VITE_PRODUCT_API_URL ||
+  import.meta.env.VITE_PRODUCT_API_URL ||
+  "http://localhost:3002";
 const ORDER_BASE_URL =
-  import.meta.env.VITE_ORDER_API_URL || "http://localhost:3003";
+  window.ENV?.VITE_ORDER_API_URL ||
+  import.meta.env.VITE_ORDER_API_URL ||
+  "http://localhost:3003";
 
 export const IAM_API = axios.create({
   baseURL: IAM_BASE_URL,

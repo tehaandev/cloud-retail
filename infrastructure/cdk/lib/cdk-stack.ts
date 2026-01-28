@@ -223,6 +223,8 @@ export class CdkStack extends cdk.Stack {
       .addProxy({ defaultIntegration: inventoryIntegration });
 
     // Frontend Service (created after API Gateway so we can reference api.url)
+    // API URLs are passed as runtime environment variables (not build args)
+    // The entrypoint.sh script generates env-config.js with these values
     const frontendService =
       new ecs_patterns.ApplicationLoadBalancedFargateService(
         this,
@@ -232,14 +234,12 @@ export class CdkStack extends cdk.Stack {
           taskImageOptions: {
             image: ecs.ContainerImage.fromAsset(
               path.join(__dirname, "../../../frontend"),
-              {
-                buildArgs: {
-                  VITE_IAM_API_URL: api.url + "auth",
-                  VITE_PRODUCT_API_URL: api.url + "products",
-                  VITE_ORDER_API_URL: api.url + "orders",
-                },
-              },
             ),
+            environment: {
+              VITE_IAM_API_URL: `${api.url}auth`,
+              VITE_PRODUCT_API_URL: `${api.url}products`,
+              VITE_ORDER_API_URL: `${api.url}orders`,
+            },
             containerPort: 80,
           },
           ...commonTaskProps,
