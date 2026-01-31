@@ -9,7 +9,11 @@ import * as rds from "aws-cdk-lib/aws-rds";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as path from "path";
+import { Platform } from "aws-cdk-lib/aws-ecr-assets";
+
+const MIN_HEALTHY_PERCENT = 50;
 
 export class CdkStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -19,6 +23,16 @@ export class CdkStack extends cdk.Stack {
     const vpc = new ec2.Vpc(this, "CloudRetailVpc", {
       maxAzs: 2,
       natGateways: 1,
+      subnetConfiguration: [
+        {
+          name: "public",
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+        {
+          name: "private",
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+        },
+      ],
     });
 
     // 2. ECS Cluster
@@ -75,13 +89,18 @@ export class CdkStack extends cdk.Stack {
       "IamService",
       {
         cluster,
+        desiredCount: 1,
+        minHealthyPercent: MIN_HEALTHY_PERCENT,
         taskImageOptions: {
           image: ecs.ContainerImage.fromAsset(
             path.join(__dirname, "../../../services/iam-service"),
+            {
+              platform: Platform.LINUX_AMD64,
+            },
           ),
           environment: {
             PORT: "80",
-            DATABASE_URL: `postgres://${dbInstance.instanceEndpoint.hostname}:5432/iam_db`,
+            DATABASE_URL: `postgres://${dbInstance.secret?.secretValueFromJson("username").unsafeUnwrap()}:${dbInstance.secret?.secretValueFromJson("password").unsafeUnwrap()}@${dbInstance.instanceEndpoint.hostname}:5432/cloudretail`,
             JWT_SECRET: "supersecretkey",
           },
           containerPort: 80,
@@ -97,9 +116,14 @@ export class CdkStack extends cdk.Stack {
         "ProductService",
         {
           cluster,
+          desiredCount: 1,
+          minHealthyPercent: MIN_HEALTHY_PERCENT,
           taskImageOptions: {
             image: ecs.ContainerImage.fromAsset(
               path.join(__dirname, "../../../services/product-service"),
+              {
+                platform: Platform.LINUX_AMD64,
+              },
             ),
             environment: {
               PORT: "80",
@@ -119,13 +143,18 @@ export class CdkStack extends cdk.Stack {
       "OrderService",
       {
         cluster,
+        desiredCount: 1,
+        minHealthyPercent: MIN_HEALTHY_PERCENT,
         taskImageOptions: {
           image: ecs.ContainerImage.fromAsset(
             path.join(__dirname, "../../../services/order-service"),
+            {
+              platform: Platform.LINUX_AMD64,
+            },
           ),
           environment: {
             PORT: "80",
-            DATABASE_URL: `postgres://${dbInstance.instanceEndpoint.hostname}:5432/order_db`,
+            DATABASE_URL: `postgres://${dbInstance.secret?.secretValueFromJson("username").unsafeUnwrap()}:${dbInstance.secret?.secretValueFromJson("password").unsafeUnwrap()}@${dbInstance.instanceEndpoint.hostname}:5432/cloudretail`,
             PRODUCT_SERVICE_URL: `http://${productService.loadBalancer.loadBalancerDnsName}`,
             EVENT_BUS_NAME: eventBus.eventBusName, // Pass bus name
           },
@@ -143,13 +172,18 @@ export class CdkStack extends cdk.Stack {
         "InventoryService",
         {
           cluster,
+          desiredCount: 1,
+          minHealthyPercent: MIN_HEALTHY_PERCENT,
           taskImageOptions: {
             image: ecs.ContainerImage.fromAsset(
               path.join(__dirname, "../../../services/inventory-service"),
+              {
+                platform: Platform.LINUX_AMD64,
+              },
             ),
             environment: {
               PORT: "80",
-              DATABASE_URL: `postgres://${dbInstance.instanceEndpoint.hostname}:5432/inventory_db`,
+              DATABASE_URL: `postgres://${dbInstance.secret?.secretValueFromJson("username").unsafeUnwrap()}:${dbInstance.secret?.secretValueFromJson("password").unsafeUnwrap()}@${dbInstance.instanceEndpoint.hostname}:5432/cloudretail`,
             },
             containerPort: 80,
           },
@@ -158,20 +192,63 @@ export class CdkStack extends cdk.Stack {
       );
 
     // Event-Driven Loop: OrderCreated -> Inventory Service (WebHook)
-    // In a real AWS environment, we use an API Destination to call our service internal ALB
-    const apiDestination = new events.ApiDestination(
+    // Use Lambda function to forward events to internal HTTP endpoint
+    // This avoids the HTTPS requirement of API Destinations
+    const inventoryWebhookHandler = new lambda.Function(
       this,
-      "InventoryApiDestination",
+      "InventoryWebhookHandler",
       {
-        connection: new events.Connection(this, "InventoryConnection", {
-          authorization: events.Authorization.apiKey(
-            "x-api-key",
-            cdk.SecretValue.unsafePlainText("unused"),
-          ), // Dummy for internal
-        }),
-        endpoint: `http://${inventoryService.loadBalancer.loadBalancerDnsName}/inventory/webhook/order-created`,
-        description: "Send OrderCreated events to Inventory Service",
-        httpMethod: events.HttpMethod.POST,
+        runtime: lambda.Runtime.NODEJS_18_X,
+        handler: "index.handler",
+        code: lambda.Code.fromInline(`
+          const https = require('https');
+          const http = require('http');
+
+          exports.handler = async (event) => {
+            console.log('Received event:', JSON.stringify(event, null, 2));
+            
+            const endpoint = process.env.INVENTORY_ENDPOINT;
+            const url = new URL(endpoint);
+            const client = url.protocol === 'https:' ? https : http;
+            
+            const data = JSON.stringify(event.detail);
+            
+            const options = {
+              hostname: url.hostname,
+              port: url.port || (url.protocol === 'https:' ? 443 : 80),
+              path: url.pathname,
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': data.length
+              }
+            };
+            
+            return new Promise((resolve, reject) => {
+              const req = client.request(options, (res) => {
+                let body = '';
+                res.on('data', (chunk) => body += chunk);
+                res.on('end', () => {
+                  console.log('Response:', body);
+                  resolve({ statusCode: res.statusCode, body });
+                });
+              });
+              
+              req.on('error', (error) => {
+                console.error('Error:', error);
+                reject(error);
+              });
+              
+              req.write(data);
+              req.end();
+            });
+          };
+        `),
+        environment: {
+          INVENTORY_ENDPOINT: `http://${inventoryService.loadBalancer.loadBalancerDnsName}/inventory/webhook/order-created`,
+        },
+        vpc: vpc,
+        timeout: cdk.Duration.seconds(30),
       },
     );
 
@@ -181,7 +258,7 @@ export class CdkStack extends cdk.Stack {
         source: ["com.cloudretail.order"],
         detailType: ["OrderCreated"],
       },
-      targets: [new targets.ApiDestination(apiDestination)],
+      targets: [new targets.LambdaFunction(inventoryWebhookHandler)],
     });
 
     // 6. API Gateway
@@ -231,15 +308,21 @@ export class CdkStack extends cdk.Stack {
         "FrontendService",
         {
           cluster,
+          desiredCount: 1,
+          minHealthyPercent: MIN_HEALTHY_PERCENT,
           taskImageOptions: {
             image: ecs.ContainerImage.fromAsset(
               path.join(__dirname, "../../../frontend"),
+              {
+                platform: Platform.LINUX_AMD64,
+              },
             ),
             environment: {
               VITE_IAM_API_URL: `${api.url}auth`,
               VITE_PRODUCT_API_URL: `${api.url}products`,
               VITE_ORDER_API_URL: `${api.url}orders`,
             },
+
             containerPort: 80,
           },
           ...commonTaskProps,
