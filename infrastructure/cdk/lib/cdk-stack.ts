@@ -425,34 +425,68 @@ export class CdkStack extends cdk.Stack {
       },
     });
 
-    const iamIntegration = new apigateway.HttpIntegration(
-      `http://${iamService.loadBalancer.loadBalancerDnsName}/`,
-    );
-    const productIntegration = new apigateway.HttpIntegration(
-      `http://${productService.loadBalancer.loadBalancerDnsName}/`,
-    );
-    const orderIntegration = new apigateway.HttpIntegration(
-      `http://${orderService.loadBalancer.loadBalancerDnsName}/`,
-    );
-    const inventoryIntegration = new apigateway.HttpIntegration(
-      `http://${inventoryService.loadBalancer.loadBalancerDnsName}/`,
-    );
+    // IAM Service Routes
+    const auth = api.root.addResource("auth");
+    auth.addProxy({
+      defaultIntegration: new apigateway.HttpIntegration(
+        `http://${iamService.loadBalancer.loadBalancerDnsName}/auth/{proxy}`,
+        {
+          proxy: true,
+        },
+      ),
+      anyMethod: true,
+    });
 
-    api.root
-      .addResource("auth")
-      .addProxy({ defaultIntegration: iamIntegration });
-
+    // Product Service Routes
     const products = api.root.addResource("products");
-    products.addMethod("GET", productIntegration);
-    products.addMethod("POST", productIntegration);
-    products.addResource("{id}").addMethod("GET", productIntegration);
+    const productsIntegration = new apigateway.HttpIntegration(
+      `http://${productService.loadBalancer.loadBalancerDnsName}/products`,
+      {
+        proxy: true,
+      },
+    );
+    const productsProxyIntegration = new apigateway.HttpIntegration(
+      `http://${productService.loadBalancer.loadBalancerDnsName}/products/{proxy}`,
+      {
+        proxy: true,
+      },
+    );
+    products.addMethod("ANY", productsIntegration);
+    products.addProxy({
+      defaultIntegration: productsProxyIntegration,
+      anyMethod: true,
+    });
 
-    api.root
-      .addResource("orders")
-      .addProxy({ defaultIntegration: orderIntegration });
-    api.root
-      .addResource("inventory")
-      .addProxy({ defaultIntegration: inventoryIntegration });
+    // Order Service Routes
+    const orders = api.root.addResource("orders");
+    const ordersIntegration = new apigateway.HttpIntegration(
+      `http://${orderService.loadBalancer.loadBalancerDnsName}/orders`,
+      {
+        proxy: true,
+      },
+    );
+    orders.addMethod("ANY", ordersIntegration);
+    orders.addProxy({
+      defaultIntegration: new apigateway.HttpIntegration(
+        `http://${orderService.loadBalancer.loadBalancerDnsName}/orders/{proxy}`,
+        {
+          proxy: true,
+        },
+      ),
+      anyMethod: true,
+    });
+
+    // Inventory Service Routes
+    const inventory = api.root.addResource("inventory");
+    inventory.addProxy({
+      defaultIntegration: new apigateway.HttpIntegration(
+        `http://${inventoryService.loadBalancer.loadBalancerDnsName}/inventory/{proxy}`,
+        {
+          proxy: true,
+        },
+      ),
+      anyMethod: true,
+    });
 
     // Frontend Service (created after API Gateway so we can reference api.url)
     // API URLs are passed as runtime environment variables (not build args)
