@@ -14,7 +14,7 @@ const generateToken = (user) => {
   return jwt.sign(
     { id: user.id, email: user.email, role: user.role },
     process.env.JWT_SECRET,
-    { expiresIn: "1h" }
+    { expiresIn: "1h" },
   );
 };
 
@@ -45,7 +45,7 @@ app.post("/auth/register", async (req, res) => {
     // Create user
     const result = await query(
       "INSERT INTO users (email, password, role) VALUES ($1, $2, $3) RETURNING id, email, role",
-      [email, hashedPassword, "customer"]
+      [email, hashedPassword, "customer"],
     );
 
     res.status(201).json({

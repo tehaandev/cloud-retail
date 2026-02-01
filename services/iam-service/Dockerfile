@@ -8,6 +8,8 @@ RUN npm install
 
 COPY . .
 
+# Trigger rebuild: 3
+
 EXPOSE 3001
 
 CMD ["npm", "start"]

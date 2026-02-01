@@ -1,16 +1,20 @@
 const AWS = require('aws-sdk');
 
-const dynamoDB = new AWS.DynamoDB({
+// Only use endpoint override if explicitly set (for local development)
+const dynamoConfig = {
   region: process.env.AWS_REGION || 'us-east-1',
-  endpoint: process.env.DYNAMODB_ENDPOINT || 'http://localhost:8000',
-});
+};
 
-const docClient = new AWS.DynamoDB.DocumentClient({
-  region: process.env.AWS_REGION || 'us-east-1',
-  endpoint: process.env.DYNAMODB_ENDPOINT || 'http://localhost:8000',
-});
+// Only add endpoint if explicitly set (local development with DynamoDB Local)
+if (process.env.DYNAMODB_ENDPOINT) {
+  dynamoConfig.endpoint = process.env.DYNAMODB_ENDPOINT;
+}
 
-const TABLE_NAME = 'Products';
+const dynamoDB = new AWS.DynamoDB(dynamoConfig);
+const docClient = new AWS.DynamoDB.DocumentClient(dynamoConfig);
+
+// Use environment variable for table name (set by CDK in production)
+const TABLE_NAME = process.env.TABLE_NAME || 'Products';
 
 const initDB = async () => {
   const params = {

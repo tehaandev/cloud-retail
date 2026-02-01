@@ -427,13 +427,21 @@ export class CdkStack extends cdk.Stack {
 
     // IAM Service Routes
     const auth = api.root.addResource("auth");
+    const authIntegration = new apigateway.HttpIntegration(
+      `http://${iamService.loadBalancer.loadBalancerDnsName}/auth`,
+      {
+        proxy: true,
+      },
+    );
+    const authProxyIntegration = new apigateway.HttpIntegration(
+      `http://${iamService.loadBalancer.loadBalancerDnsName}/auth/{proxy}`,
+      {
+        proxy: true,
+      },
+    );
+    auth.addMethod("ANY", authIntegration);
     auth.addProxy({
-      defaultIntegration: new apigateway.HttpIntegration(
-        `http://${iamService.loadBalancer.loadBalancerDnsName}/auth/{proxy}`,
-        {
-          proxy: true,
-        },
-      ),
+      defaultIntegration: authProxyIntegration,
       anyMethod: true,
     });
 
@@ -465,16 +473,17 @@ export class CdkStack extends cdk.Stack {
         proxy: true,
       },
     );
-    orders.addMethod("ANY", ordersIntegration);
+    const ordersProxyIntegration = new apigateway.HttpIntegration(
+      `http://${orderService.loadBalancer.loadBalancerDnsName}/orders/{proxy}`,
+      {
+        proxy: true,
+      },
+    );
     orders.addProxy({
-      defaultIntegration: new apigateway.HttpIntegration(
-        `http://${orderService.loadBalancer.loadBalancerDnsName}/orders/{proxy}`,
-        {
-          proxy: true,
-        },
-      ),
+      defaultIntegration: ordersProxyIntegration,
       anyMethod: true,
     });
+    orders.addMethod("ANY", ordersIntegration);
 
     // Inventory Service Routes
     const inventory = api.root.addResource("inventory");
@@ -485,8 +494,14 @@ export class CdkStack extends cdk.Stack {
           proxy: true,
         },
       ),
-      anyMethod: true,
     });
+    const inventoryIntegration = new apigateway.HttpIntegration(
+      `http://${inventoryService.loadBalancer.loadBalancerDnsName}/inventory`,
+      {
+        proxy: true,
+      },
+    );
+    inventory.addMethod("ANY", inventoryIntegration);
 
     // Frontend Service (created after API Gateway so we can reference api.url)
     // API URLs are passed as runtime environment variables (not build args)
