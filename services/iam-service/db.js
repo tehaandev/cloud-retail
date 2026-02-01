@@ -1,7 +1,12 @@
 const { Pool } = require('pg');
 
+// Support both DATABASE_URL (local) and component-based (production)
+const connectionString = process.env.DATABASE_URL ||
+  `postgres://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`;
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString,
+  ssl: process.env.DB_HOST ? { rejectUnauthorized: false } : false,
 });
 
 // Helper to run queries

@@ -10,6 +10,9 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as cr from "aws-cdk-lib/custom-resources";
+import * as iam from "aws-cdk-lib/aws-iam";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as path from "path";
 import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 
@@ -55,6 +58,18 @@ export class CdkStack extends cdk.Stack {
       retention: cdk.Duration.days(7),
     });
 
+    // JWT Secret for IAM Service
+    const jwtSecret = new secretsmanager.Secret(this, "JwtSecret", {
+      secretName: "CloudRetail/JwtSecret",
+      description: "JWT signing secret for IAM service authentication",
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({ algorithm: "HS256" }),
+        generateStringKey: "secret",
+        excludePunctuation: true,
+        passwordLength: 64,
+      },
+    });
+
     // 4. Databases
     const productTable = new dynamodb.Table(this, "ProductsTable", {
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
@@ -75,10 +90,59 @@ export class CdkStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       databaseName: "cloudretail",
     });
-    dbInstance.connections.allowFromAnyIpv4(
-      ec2.Port.tcp(5432),
-      "Allow App access to DB",
+    // Lambda Layer for pg module
+    const pgLayer = new lambda.LayerVersion(this, "PgLayer", {
+      code: lambda.Code.fromAsset(path.join(__dirname, "../lambda/db-init")),
+      compatibleRuntimes: [lambda.Runtime.NODEJS_18_X],
+      description: "PostgreSQL client library (pg)",
+    });
+
+    // Lambda Execution Role
+    const dbInitRole = new iam.Role(this, "DbInitLambdaRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          "service-role/AWSLambdaVPCAccessExecutionRole",
+        ),
+      ],
+    });
+
+    dbInstance.secret!.grantRead(dbInitRole);
+
+    // Lambda Function for Database Initialization
+    const dbInitFunction = new lambda.Function(this, "DbInitFunction", {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../lambda/db-init")),
+      layers: [pgLayer],
+      environment: {
+        DB_HOST: dbInstance.instanceEndpoint.hostname,
+        DB_SECRET_ARN: dbInstance.secret!.secretArn,
+      },
+      vpc: vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      timeout: cdk.Duration.minutes(5),
+      role: dbInitRole,
+    });
+
+    // Custom Resource Provider
+    const dbInitProvider = new cr.Provider(this, "DbInitProvider", {
+      onEventHandler: dbInitFunction,
+    });
+
+    const dbInitCustomResource = new cdk.CustomResource(
+      this,
+      "DbInitCustomResource",
+      {
+        serviceToken: dbInitProvider.serviceToken,
+        properties: {
+          DbEndpoint: dbInstance.instanceEndpoint.hostname,
+          Timestamp: Date.now(),
+        },
+      },
     );
+
+    dbInitCustomResource.node.addDependency(dbInstance);
 
     // 5. Microservices (Fargate)
     const commonTaskProps = { memoryLimitMiB: 512, cpu: 256 };
@@ -94,20 +158,39 @@ export class CdkStack extends cdk.Stack {
         taskImageOptions: {
           image: ecs.ContainerImage.fromAsset(
             path.join(__dirname, "../../../services/iam-service"),
-            {
-              platform: Platform.LINUX_AMD64,
-            },
+            { platform: Platform.LINUX_AMD64 },
           ),
           environment: {
             PORT: "80",
-            DATABASE_URL: `postgres://${dbInstance.secret?.secretValueFromJson("username").unsafeUnwrap()}:${dbInstance.secret?.secretValueFromJson("password").unsafeUnwrap()}@${dbInstance.instanceEndpoint.hostname}:5432/cloudretail`,
-            JWT_SECRET: "supersecretkey",
+            DB_HOST: dbInstance.instanceEndpoint.hostname,
+            DB_PORT: "5432",
+            DB_NAME: "iam_db",
+          },
+          secrets: {
+            DB_USERNAME: ecs.Secret.fromSecretsManager(
+              dbInstance.secret!,
+              "username",
+            ),
+            DB_PASSWORD: ecs.Secret.fromSecretsManager(
+              dbInstance.secret!,
+              "password",
+            ),
+            JWT_SECRET: ecs.Secret.fromSecretsManager(jwtSecret, "secret"),
           },
           containerPort: 80,
         },
         ...commonTaskProps,
+        healthCheckGracePeriod: cdk.Duration.seconds(300),
       },
     );
+
+    iamService.targetGroup.configureHealthCheck({
+      path: "/health",
+      interval: cdk.Duration.seconds(60),
+      timeout: cdk.Duration.seconds(30),
+      healthyThresholdCount: 2,
+      unhealthyThresholdCount: 5,
+    });
 
     // Product Service
     const productService =
@@ -133,8 +216,18 @@ export class CdkStack extends cdk.Stack {
             containerPort: 80,
           },
           ...commonTaskProps,
+          healthCheckGracePeriod: cdk.Duration.seconds(300),
         },
       );
+
+    productService.targetGroup.configureHealthCheck({
+      path: "/health",
+      interval: cdk.Duration.seconds(60),
+      timeout: cdk.Duration.seconds(30),
+      healthyThresholdCount: 2,
+      unhealthyThresholdCount: 5,
+    });
+
     productTable.grantReadWriteData(productService.taskDefinition.taskRole);
 
     // Order Service
@@ -148,21 +241,42 @@ export class CdkStack extends cdk.Stack {
         taskImageOptions: {
           image: ecs.ContainerImage.fromAsset(
             path.join(__dirname, "../../../services/order-service"),
-            {
-              platform: Platform.LINUX_AMD64,
-            },
+            { platform: Platform.LINUX_AMD64 },
           ),
           environment: {
             PORT: "80",
-            DATABASE_URL: `postgres://${dbInstance.secret?.secretValueFromJson("username").unsafeUnwrap()}:${dbInstance.secret?.secretValueFromJson("password").unsafeUnwrap()}@${dbInstance.instanceEndpoint.hostname}:5432/cloudretail`,
+            DB_HOST: dbInstance.instanceEndpoint.hostname,
+            DB_PORT: "5432",
+            DB_NAME: "order_db",
             PRODUCT_SERVICE_URL: `http://${productService.loadBalancer.loadBalancerDnsName}`,
-            EVENT_BUS_NAME: eventBus.eventBusName, // Pass bus name
+            EVENT_BUS_NAME: eventBus.eventBusName,
+            AWS_REGION: this.region,
+          },
+          secrets: {
+            DB_USERNAME: ecs.Secret.fromSecretsManager(
+              dbInstance.secret!,
+              "username",
+            ),
+            DB_PASSWORD: ecs.Secret.fromSecretsManager(
+              dbInstance.secret!,
+              "password",
+            ),
           },
           containerPort: 80,
         },
         ...commonTaskProps,
+        healthCheckGracePeriod: cdk.Duration.seconds(300),
       },
     );
+
+    orderService.targetGroup.configureHealthCheck({
+      path: "/health",
+      interval: cdk.Duration.seconds(60),
+      timeout: cdk.Duration.seconds(30),
+      healthyThresholdCount: 2,
+      unhealthyThresholdCount: 5,
+    });
+
     eventBus.grantPutEventsTo(orderService.taskDefinition.taskRole);
 
     // Inventory Service
@@ -177,19 +291,38 @@ export class CdkStack extends cdk.Stack {
           taskImageOptions: {
             image: ecs.ContainerImage.fromAsset(
               path.join(__dirname, "../../../services/inventory-service"),
-              {
-                platform: Platform.LINUX_AMD64,
-              },
+              { platform: Platform.LINUX_AMD64 },
             ),
             environment: {
               PORT: "80",
-              DATABASE_URL: `postgres://${dbInstance.secret?.secretValueFromJson("username").unsafeUnwrap()}:${dbInstance.secret?.secretValueFromJson("password").unsafeUnwrap()}@${dbInstance.instanceEndpoint.hostname}:5432/cloudretail`,
+              DB_HOST: dbInstance.instanceEndpoint.hostname,
+              DB_PORT: "5432",
+              DB_NAME: "inventory_db",
+            },
+            secrets: {
+              DB_USERNAME: ecs.Secret.fromSecretsManager(
+                dbInstance.secret!,
+                "username",
+              ),
+              DB_PASSWORD: ecs.Secret.fromSecretsManager(
+                dbInstance.secret!,
+                "password",
+              ),
             },
             containerPort: 80,
           },
           ...commonTaskProps,
+          healthCheckGracePeriod: cdk.Duration.seconds(300),
         },
       );
+
+    inventoryService.targetGroup.configureHealthCheck({
+      path: "/health",
+      interval: cdk.Duration.seconds(60),
+      timeout: cdk.Duration.seconds(30),
+      healthyThresholdCount: 2,
+      unhealthyThresholdCount: 5,
+    });
 
     // Event-Driven Loop: OrderCreated -> Inventory Service (WebHook)
     // Use Lambda function to forward events to internal HTTP endpoint
@@ -261,6 +394,28 @@ export class CdkStack extends cdk.Stack {
       targets: [new targets.LambdaFunction(inventoryWebhookHandler)],
     });
 
+    // Secure database access - only allow from specific services
+    dbInstance.connections.allowFrom(
+      iamService.service.connections,
+      ec2.Port.tcp(5432),
+      "IAM Service to RDS",
+    );
+    dbInstance.connections.allowFrom(
+      orderService.service.connections,
+      ec2.Port.tcp(5432),
+      "Order Service to RDS",
+    );
+    dbInstance.connections.allowFrom(
+      inventoryService.service.connections,
+      ec2.Port.tcp(5432),
+      "Inventory Service to RDS",
+    );
+    dbInstance.connections.allowFrom(
+      dbInitFunction,
+      ec2.Port.tcp(5432),
+      "DB Init Lambda to RDS",
+    );
+
     // 6. API Gateway
     const api = new apigateway.RestApi(this, "CloudRetailApi", {
       restApiName: "CloudRetail Service",
@@ -326,8 +481,17 @@ export class CdkStack extends cdk.Stack {
             containerPort: 80,
           },
           ...commonTaskProps,
+          healthCheckGracePeriod: cdk.Duration.seconds(300),
         },
       );
+
+    frontendService.targetGroup.configureHealthCheck({
+      path: "/",
+      interval: cdk.Duration.seconds(60),
+      timeout: cdk.Duration.seconds(30),
+      healthyThresholdCount: 2,
+      unhealthyThresholdCount: 5,
+    });
 
     new cdk.CfnOutput(this, "ApiUrl", { value: api.url });
     new cdk.CfnOutput(this, "FrontendUrl", {
