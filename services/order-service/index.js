@@ -10,7 +10,9 @@ app.use(express.json());
 app.use(cors());
 
 // Initialize EventBridge
-const eventbridge = new AWS.EventBridge({ region: process.env.AWS_REGION || 'us-east-1' });
+const eventbridge = new AWS.EventBridge({
+  region: process.env.AWS_REGION || "ap-southeast-1",
+});
 
 // Initialize Database
 initDB();
@@ -30,10 +32,14 @@ app.post("/orders", async (req, res) => {
     // 1. Validate product exists and get price
     let product;
     try {
-      const response = await axios.get(`${process.env.PRODUCT_SERVICE_URL}/products/${productId}`);
+      const response = await axios.get(
+        `${process.env.PRODUCT_SERVICE_URL}/products/${productId}`,
+      );
       product = response.data;
     } catch (err) {
-      return res.status(404).json({ message: "Product not found or unavailable" });
+      return res
+        .status(404)
+        .json({ message: "Product not found or unavailable" });
     }
 
     const totalPrice = product.price * quantity;
@@ -41,7 +47,7 @@ app.post("/orders", async (req, res) => {
     // 2. Save order to DB
     const result = await query(
       "INSERT INTO orders (user_id, product_id, quantity, total_price, status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [userId, productId, quantity, totalPrice, "pending"]
+      [userId, productId, quantity, totalPrice, "pending"],
     );
 
     const order = result.rows[0];
@@ -50,10 +56,10 @@ app.post("/orders", async (req, res) => {
     const params = {
       Entries: [
         {
-          Source: 'com.cloudretail.order',
-          DetailType: 'OrderCreated',
+          Source: "com.cloudretail.order",
+          DetailType: "OrderCreated",
           Detail: JSON.stringify(order),
-          EventBusName: process.env.EVENT_BUS_NAME || 'default',
+          EventBusName: process.env.EVENT_BUS_NAME || "default",
         },
       ],
     };
@@ -62,7 +68,10 @@ app.post("/orders", async (req, res) => {
       await eventbridge.putEvents(params).promise();
       console.log(`[EVENT] OrderCreated published to EventBridge: ${order.id}`);
     } catch (eventError) {
-      console.error("[ERROR] Failed to publish event to EventBridge:", eventError);
+      console.error(
+        "[ERROR] Failed to publish event to EventBridge:",
+        eventError,
+      );
       // We don't fail the request here, but in production you'd use a DLQ or retry pattern
     }
 
@@ -76,7 +85,9 @@ app.post("/orders", async (req, res) => {
 // 3. Get Order by ID
 app.get("/orders/:id", async (req, res) => {
   try {
-    const result = await query("SELECT * FROM orders WHERE id = $1", [req.params.id]);
+    const result = await query("SELECT * FROM orders WHERE id = $1", [
+      req.params.id,
+    ]);
     const order = result.rows[0];
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -93,3 +104,4 @@ const PORT = process.env.PORT || 3003;
 app.listen(PORT, () => {
   console.log(`Order Service running on port ${PORT}`);
 });
+

@@ -473,9 +473,9 @@ export class CdkStack extends cdk.Stack {
               },
             ),
             environment: {
-              VITE_IAM_API_URL: `${api.url}auth`,
-              VITE_PRODUCT_API_URL: `${api.url}products`,
-              VITE_ORDER_API_URL: `${api.url}orders`,
+              VITE_IAM_API_URL: `${api.url}`,
+              VITE_PRODUCT_API_URL: `${api.url}`,
+              VITE_ORDER_API_URL: `${api.url}`,
             },
 
             containerPort: 80,
