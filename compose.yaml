@@ -42,6 +42,7 @@ services:
     environment:
       - PORT=3002
       - AWS_REGION=us-east-1
+      - TABLE_NAME=Products
       - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
       - AWS_ACCESS_KEY_ID=fakeMyKeyId
       - AWS_SECRET_ACCESS_KEY=fakeSecretAccessKey

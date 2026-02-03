@@ -485,6 +485,18 @@ export class CdkStack extends cdk.Stack {
       "DB Init Lambda to RDS",
     );
 
+    // Add CloudFormation-level dependencies to ensure services wait for DB init
+    // This avoids circular dependencies with security groups
+    const cfnIamService = iamService.node.defaultChild as ecs.CfnService;
+    const cfnOrderService = orderService.node.defaultChild as ecs.CfnService;
+    const cfnInventoryService = inventoryService.node
+      .defaultChild as ecs.CfnService;
+    const cfnDbInit = dbInitCustomResource.node.defaultChild as cdk.CfnResource;
+
+    cfnIamService.addDependency(cfnDbInit);
+    cfnOrderService.addDependency(cfnDbInit);
+    cfnInventoryService.addDependency(cfnDbInit);
+
     // 10. Frontend Service
     const frontendTaskDef = new ecs.FargateTaskDefinition(
       this,
