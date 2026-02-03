@@ -11,3 +11,5 @@ COPY . .
 EXPOSE 3002
 
 CMD ["npm", "start"]
+
+# Trigger rebuild: 2025-02-03-001
