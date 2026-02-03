@@ -2,13 +2,11 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
-import * as ecs_patterns from "aws-cdk-lib/aws-ecs-patterns";
-import * as apigateway from "aws-cdk-lib/aws-apigateway";
+import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
-import * as logs from "aws-cdk-lib/aws-logs";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as cr from "aws-cdk-lib/custom-resources";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -22,7 +20,7 @@ export class CdkStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // 1. VPC (Virtual Private Cloud)
+    // 1. VPC
     const vpc = new ec2.Vpc(this, "CloudRetailVpc", {
       maxAzs: 2,
       natGateways: 1,
@@ -43,12 +41,11 @@ export class CdkStack extends cdk.Stack {
       vpc: vpc,
     });
 
-    // 3. Event Bus (Event-Driven Architecture)
+    // 3. Event Bus
     const eventBus = new events.EventBus(this, "CloudRetailEventBus", {
       eventBusName: "CloudRetailBus",
     });
 
-    // Archive all events for debugging/audit
     new events.Archive(this, "EventArchive", {
       eventPattern: {
         account: [cdk.Stack.of(this).account],
@@ -58,7 +55,7 @@ export class CdkStack extends cdk.Stack {
       retention: cdk.Duration.days(7),
     });
 
-    // JWT Secret for IAM Service
+    // JWT Secret
     const jwtSecret = new secretsmanager.Secret(this, "JwtSecret", {
       secretName: "CloudRetail/JwtSecret",
       description: "JWT signing secret for IAM service authentication",
@@ -90,14 +87,14 @@ export class CdkStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       databaseName: "cloudretail",
     });
+
     // Lambda Layer for pg module
     const pgLayer = new lambda.LayerVersion(this, "PgLayer", {
       code: lambda.Code.fromAsset(path.join(__dirname, "../lambda/db-init")),
-      compatibleRuntimes: [lambda.Runtime.NODEJS_18_X],
+      compatibleRuntimes: [lambda.Runtime.NODEJS_24_X],
       description: "PostgreSQL client library (pg)",
     });
 
-    // Lambda Execution Role
     const dbInitRole = new iam.Role(this, "DbInitLambdaRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [
@@ -109,9 +106,8 @@ export class CdkStack extends cdk.Stack {
 
     dbInstance.secret!.grantRead(dbInitRole);
 
-    // Lambda Function for Database Initialization
     const dbInitFunction = new lambda.Function(this, "DbInitFunction", {
-      runtime: lambda.Runtime.NODEJS_18_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: "index.handler",
       code: lambda.Code.fromAsset(path.join(__dirname, "../lambda/db-init")),
       layers: [pgLayer],
@@ -125,7 +121,6 @@ export class CdkStack extends cdk.Stack {
       role: dbInitRole,
     });
 
-    // Custom Resource Provider
     const dbInitProvider = new cr.Provider(this, "DbInitProvider", {
       onEventHandler: dbInitFunction,
     });
@@ -144,211 +139,288 @@ export class CdkStack extends cdk.Stack {
 
     dbInitCustomResource.node.addDependency(dbInstance);
 
-    // 5. Microservices (Fargate)
+    // 5. Application Load Balancer
+    const alb = new elbv2.ApplicationLoadBalancer(this, "CloudRetailALB", {
+      vpc,
+      internetFacing: true,
+    });
+
+    const listener = alb.addListener("HttpListener", {
+      port: 80,
+      open: true,
+    });
+
+    // Common task properties
     const commonTaskProps = { memoryLimitMiB: 512, cpu: 256 };
 
-    // IAM Service
-    const iamService = new ecs_patterns.ApplicationLoadBalancedFargateService(
+    // 6. IAM Service
+    const iamTaskDef = new ecs.FargateTaskDefinition(
       this,
-      "IamService",
+      "IamTaskDef",
+      commonTaskProps,
+    );
+    iamTaskDef.addContainer("IamContainer", {
+      image: ecs.ContainerImage.fromAsset(
+        path.join(__dirname, "../../../services/iam-service"),
+        { platform: Platform.LINUX_AMD64 },
+      ),
+      environment: {
+        PORT: "80",
+        DB_HOST: dbInstance.instanceEndpoint.hostname,
+        DB_PORT: "5432",
+        DB_NAME: "iam_db",
+      },
+      secrets: {
+        DB_USERNAME: ecs.Secret.fromSecretsManager(
+          dbInstance.secret!,
+          "username",
+        ),
+        DB_PASSWORD: ecs.Secret.fromSecretsManager(
+          dbInstance.secret!,
+          "password",
+        ),
+        JWT_SECRET: ecs.Secret.fromSecretsManager(jwtSecret, "secret"),
+      },
+      portMappings: [{ containerPort: 80 }],
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "iam-service" }),
+    });
+
+    const iamService = new ecs.FargateService(this, "IamService", {
+      cluster,
+      taskDefinition: iamTaskDef,
+      desiredCount: 1,
+      minHealthyPercent: MIN_HEALTHY_PERCENT,
+    });
+
+    const iamTargetGroup = new elbv2.ApplicationTargetGroup(
+      this,
+      "IamTargetGroup",
       {
-        cluster,
-        desiredCount: 1,
-        minHealthyPercent: MIN_HEALTHY_PERCENT,
-        taskImageOptions: {
-          image: ecs.ContainerImage.fromAsset(
-            path.join(__dirname, "../../../services/iam-service"),
-            { platform: Platform.LINUX_AMD64 },
-          ),
-          environment: {
-            PORT: "80",
-            DB_HOST: dbInstance.instanceEndpoint.hostname,
-            DB_PORT: "5432",
-            DB_NAME: "iam_db",
-          },
-          secrets: {
-            DB_USERNAME: ecs.Secret.fromSecretsManager(
-              dbInstance.secret!,
-              "username",
-            ),
-            DB_PASSWORD: ecs.Secret.fromSecretsManager(
-              dbInstance.secret!,
-              "password",
-            ),
-            JWT_SECRET: ecs.Secret.fromSecretsManager(jwtSecret, "secret"),
-          },
-          containerPort: 80,
+        vpc,
+        port: 80,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+        targets: [iamService],
+        healthCheck: {
+          path: "/health",
+          interval: cdk.Duration.seconds(60),
+          timeout: cdk.Duration.seconds(30),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 5,
         },
-        ...commonTaskProps,
-        healthCheckGracePeriod: cdk.Duration.seconds(300),
       },
     );
 
-    iamService.targetGroup.configureHealthCheck({
-      path: "/health",
-      interval: cdk.Duration.seconds(60),
-      timeout: cdk.Duration.seconds(30),
-      healthyThresholdCount: 2,
-      unhealthyThresholdCount: 5,
+    listener.addTargetGroups("IamRouting", {
+      targetGroups: [iamTargetGroup],
+      priority: 10,
+      conditions: [elbv2.ListenerCondition.pathPatterns(["/auth", "/auth/*"])],
     });
 
-    // Product Service
-    const productService =
-      new ecs_patterns.ApplicationLoadBalancedFargateService(
-        this,
-        "ProductService",
-        {
-          cluster,
-          desiredCount: 1,
-          minHealthyPercent: MIN_HEALTHY_PERCENT,
-          taskImageOptions: {
-            image: ecs.ContainerImage.fromAsset(
-              path.join(__dirname, "../../../services/product-service"),
-              {
-                platform: Platform.LINUX_AMD64,
-              },
-            ),
-            environment: {
-              PORT: "80",
-              AWS_REGION: this.region,
-              TABLE_NAME: productTable.tableName,
-            },
-            containerPort: 80,
-          },
-          ...commonTaskProps,
-          healthCheckGracePeriod: cdk.Duration.seconds(300),
-        },
-      );
-
-    productService.targetGroup.configureHealthCheck({
-      path: "/health",
-      interval: cdk.Duration.seconds(60),
-      timeout: cdk.Duration.seconds(30),
-      healthyThresholdCount: 2,
-      unhealthyThresholdCount: 5,
-    });
-
-    productTable.grantReadWriteData(productService.taskDefinition.taskRole);
-
-    // Order Service
-    const orderService = new ecs_patterns.ApplicationLoadBalancedFargateService(
+    // 7. Product Service
+    const productTaskDef = new ecs.FargateTaskDefinition(
       this,
-      "OrderService",
+      "ProductTaskDef",
+      commonTaskProps,
+    );
+    productTaskDef.addContainer("ProductContainer", {
+      image: ecs.ContainerImage.fromAsset(
+        path.join(__dirname, "../../../services/product-service"),
+        { platform: Platform.LINUX_AMD64 },
+      ),
+      environment: {
+        PORT: "80",
+        AWS_REGION: this.region,
+        TABLE_NAME: productTable.tableName,
+      },
+      portMappings: [{ containerPort: 80 }],
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "product-service" }),
+    });
+
+    productTable.grantReadWriteData(productTaskDef.taskRole);
+
+    const productService = new ecs.FargateService(this, "ProductService", {
+      cluster,
+      taskDefinition: productTaskDef,
+      desiredCount: 1,
+      minHealthyPercent: MIN_HEALTHY_PERCENT,
+    });
+
+    const productTargetGroup = new elbv2.ApplicationTargetGroup(
+      this,
+      "ProductTargetGroup",
       {
-        cluster,
-        desiredCount: 1,
-        minHealthyPercent: MIN_HEALTHY_PERCENT,
-        taskImageOptions: {
-          image: ecs.ContainerImage.fromAsset(
-            path.join(__dirname, "../../../services/order-service"),
-            { platform: Platform.LINUX_AMD64 },
-          ),
-          environment: {
-            PORT: "80",
-            DB_HOST: dbInstance.instanceEndpoint.hostname,
-            DB_PORT: "5432",
-            DB_NAME: "order_db",
-            PRODUCT_SERVICE_URL: `http://${productService.loadBalancer.loadBalancerDnsName}`,
-            EVENT_BUS_NAME: eventBus.eventBusName,
-            AWS_REGION: this.region,
-          },
-          secrets: {
-            DB_USERNAME: ecs.Secret.fromSecretsManager(
-              dbInstance.secret!,
-              "username",
-            ),
-            DB_PASSWORD: ecs.Secret.fromSecretsManager(
-              dbInstance.secret!,
-              "password",
-            ),
-          },
-          containerPort: 80,
+        vpc,
+        port: 80,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+        targets: [productService],
+        healthCheck: {
+          path: "/health",
+          interval: cdk.Duration.seconds(60),
+          timeout: cdk.Duration.seconds(30),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 5,
         },
-        ...commonTaskProps,
-        healthCheckGracePeriod: cdk.Duration.seconds(300),
       },
     );
 
-    orderService.targetGroup.configureHealthCheck({
-      path: "/health",
-      interval: cdk.Duration.seconds(60),
-      timeout: cdk.Duration.seconds(30),
-      healthyThresholdCount: 2,
-      unhealthyThresholdCount: 5,
+    listener.addTargetGroups("ProductRouting", {
+      targetGroups: [productTargetGroup],
+      priority: 20,
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(["/products", "/products/*"]),
+      ],
     });
 
-    eventBus.grantPutEventsTo(orderService.taskDefinition.taskRole);
+    // 8. Order Service
+    const orderTaskDef = new ecs.FargateTaskDefinition(
+      this,
+      "OrderTaskDef",
+      commonTaskProps,
+    );
+    orderTaskDef.addContainer("OrderContainer", {
+      image: ecs.ContainerImage.fromAsset(
+        path.join(__dirname, "../../../services/order-service"),
+        { platform: Platform.LINUX_AMD64 },
+      ),
+      environment: {
+        PORT: "80",
+        DB_HOST: dbInstance.instanceEndpoint.hostname,
+        DB_PORT: "5432",
+        DB_NAME: "order_db",
+        PRODUCT_SERVICE_URL: `http://${alb.loadBalancerDnsName}`,
+        EVENT_BUS_NAME: eventBus.eventBusName,
+        AWS_REGION: this.region,
+      },
+      secrets: {
+        DB_USERNAME: ecs.Secret.fromSecretsManager(
+          dbInstance.secret!,
+          "username",
+        ),
+        DB_PASSWORD: ecs.Secret.fromSecretsManager(
+          dbInstance.secret!,
+          "password",
+        ),
+      },
+      portMappings: [{ containerPort: 80 }],
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "order-service" }),
+    });
 
-    // Inventory Service
-    const inventoryService =
-      new ecs_patterns.ApplicationLoadBalancedFargateService(
-        this,
-        "InventoryService",
-        {
-          cluster,
-          desiredCount: 1,
-          minHealthyPercent: MIN_HEALTHY_PERCENT,
-          taskImageOptions: {
-            image: ecs.ContainerImage.fromAsset(
-              path.join(__dirname, "../../../services/inventory-service"),
-              { platform: Platform.LINUX_AMD64 },
-            ),
-            environment: {
-              PORT: "80",
-              DB_HOST: dbInstance.instanceEndpoint.hostname,
-              DB_PORT: "5432",
-              DB_NAME: "inventory_db",
-            },
-            secrets: {
-              DB_USERNAME: ecs.Secret.fromSecretsManager(
-                dbInstance.secret!,
-                "username",
-              ),
-              DB_PASSWORD: ecs.Secret.fromSecretsManager(
-                dbInstance.secret!,
-                "password",
-              ),
-            },
-            containerPort: 80,
-          },
-          ...commonTaskProps,
-          healthCheckGracePeriod: cdk.Duration.seconds(300),
+    eventBus.grantPutEventsTo(orderTaskDef.taskRole);
+
+    const orderService = new ecs.FargateService(this, "OrderService", {
+      cluster,
+      taskDefinition: orderTaskDef,
+      desiredCount: 1,
+      minHealthyPercent: MIN_HEALTHY_PERCENT,
+    });
+
+    const orderTargetGroup = new elbv2.ApplicationTargetGroup(
+      this,
+      "OrderTargetGroup",
+      {
+        vpc,
+        port: 80,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+        targets: [orderService],
+        healthCheck: {
+          path: "/health",
+          interval: cdk.Duration.seconds(60),
+          timeout: cdk.Duration.seconds(30),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 5,
         },
-      );
+      },
+    );
 
-    inventoryService.targetGroup.configureHealthCheck({
-      path: "/health",
-      interval: cdk.Duration.seconds(60),
-      timeout: cdk.Duration.seconds(30),
-      healthyThresholdCount: 2,
-      unhealthyThresholdCount: 5,
+    listener.addTargetGroups("OrderRouting", {
+      targetGroups: [orderTargetGroup],
+      priority: 30,
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(["/orders", "/orders/*"]),
+      ],
     });
 
-    // Event-Driven Loop: OrderCreated -> Inventory Service (WebHook)
-    // Use Lambda function to forward events to internal HTTP endpoint
-    // This avoids the HTTPS requirement of API Destinations
+    // 9. Inventory Service
+    const inventoryTaskDef = new ecs.FargateTaskDefinition(
+      this,
+      "InventoryTaskDef",
+      commonTaskProps,
+    );
+    inventoryTaskDef.addContainer("InventoryContainer", {
+      image: ecs.ContainerImage.fromAsset(
+        path.join(__dirname, "../../../services/inventory-service"),
+        { platform: Platform.LINUX_AMD64 },
+      ),
+      environment: {
+        PORT: "80",
+        DB_HOST: dbInstance.instanceEndpoint.hostname,
+        DB_PORT: "5432",
+        DB_NAME: "inventory_db",
+      },
+      secrets: {
+        DB_USERNAME: ecs.Secret.fromSecretsManager(
+          dbInstance.secret!,
+          "username",
+        ),
+        DB_PASSWORD: ecs.Secret.fromSecretsManager(
+          dbInstance.secret!,
+          "password",
+        ),
+      },
+      portMappings: [{ containerPort: 80 }],
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "inventory-service" }),
+    });
+
+    const inventoryService = new ecs.FargateService(this, "InventoryService", {
+      cluster,
+      taskDefinition: inventoryTaskDef,
+      desiredCount: 1,
+      minHealthyPercent: MIN_HEALTHY_PERCENT,
+    });
+
+    const inventoryTargetGroup = new elbv2.ApplicationTargetGroup(
+      this,
+      "InventoryTargetGroup",
+      {
+        vpc,
+        port: 80,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+        targets: [inventoryService],
+        healthCheck: {
+          path: "/health",
+          interval: cdk.Duration.seconds(60),
+          timeout: cdk.Duration.seconds(30),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 5,
+        },
+      },
+    );
+
+    listener.addTargetGroups("InventoryRouting", {
+      targetGroups: [inventoryTargetGroup],
+      priority: 40,
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(["/inventory", "/inventory/*"]),
+      ],
+    });
+
+    // Event-Driven: OrderCreated -> Inventory Service
     const inventoryWebhookHandler = new lambda.Function(
       this,
       "InventoryWebhookHandler",
       {
-        runtime: lambda.Runtime.NODEJS_18_X,
+        runtime: lambda.Runtime.NODEJS_24_X,
         handler: "index.handler",
         code: lambda.Code.fromInline(`
-          const https = require('https');
           const http = require('http');
-
           exports.handler = async (event) => {
             console.log('Received event:', JSON.stringify(event, null, 2));
-            
             const endpoint = process.env.INVENTORY_ENDPOINT;
             const url = new URL(endpoint);
-            const client = url.protocol === 'https:' ? https : http;
-            
             const data = JSON.stringify(event.detail);
-            
             const options = {
               hostname: url.hostname,
-              port: url.port || (url.protocol === 'https:' ? 443 : 80),
+              port: url.port || 80,
               path: url.pathname,
               method: 'POST',
               headers: {
@@ -356,9 +428,8 @@ export class CdkStack extends cdk.Stack {
                 'Content-Length': data.length
               }
             };
-            
             return new Promise((resolve, reject) => {
-              const req = client.request(options, (res) => {
+              const req = http.request(options, (res) => {
                 let body = '';
                 res.on('data', (chunk) => body += chunk);
                 res.on('end', () => {
@@ -366,19 +437,17 @@ export class CdkStack extends cdk.Stack {
                   resolve({ statusCode: res.statusCode, body });
                 });
               });
-              
               req.on('error', (error) => {
                 console.error('Error:', error);
                 reject(error);
               });
-              
               req.write(data);
               req.end();
             });
           };
         `),
         environment: {
-          INVENTORY_ENDPOINT: `http://${inventoryService.loadBalancer.loadBalancerDnsName}/inventory/webhook/order-created`,
+          INVENTORY_ENDPOINT: `http://${alb.loadBalancerDnsName}/inventory/webhook/order-created`,
         },
         vpc: vpc,
         timeout: cdk.Duration.seconds(30),
@@ -394,19 +463,19 @@ export class CdkStack extends cdk.Stack {
       targets: [new targets.LambdaFunction(inventoryWebhookHandler)],
     });
 
-    // Secure database access - only allow from specific services
+    // Database security
     dbInstance.connections.allowFrom(
-      iamService.service.connections,
+      iamService.connections,
       ec2.Port.tcp(5432),
       "IAM Service to RDS",
     );
     dbInstance.connections.allowFrom(
-      orderService.service.connections,
+      orderService.connections,
       ec2.Port.tcp(5432),
       "Order Service to RDS",
     );
     dbInstance.connections.allowFrom(
-      inventoryService.service.connections,
+      inventoryService.connections,
       ec2.Port.tcp(5432),
       "Inventory Service to RDS",
     );
@@ -416,135 +485,58 @@ export class CdkStack extends cdk.Stack {
       "DB Init Lambda to RDS",
     );
 
-    // 6. API Gateway
-    const api = new apigateway.RestApi(this, "CloudRetailApi", {
-      restApiName: "CloudRetail Service",
-      defaultCorsPreflightOptions: {
-        allowOrigins: apigateway.Cors.ALL_ORIGINS,
-        allowMethods: apigateway.Cors.ALL_METHODS,
-      },
-    });
-
-    // IAM Service Routes
-    const auth = api.root.addResource("auth");
-    const authIntegration = new apigateway.HttpIntegration(
-      `http://${iamService.loadBalancer.loadBalancerDnsName}/auth`,
-      {
-        proxy: true,
-      },
+    // 10. Frontend Service
+    const frontendTaskDef = new ecs.FargateTaskDefinition(
+      this,
+      "FrontendTaskDef",
+      commonTaskProps,
     );
-    const authProxyIntegration = new apigateway.HttpIntegration(
-      `http://${iamService.loadBalancer.loadBalancerDnsName}/auth/{proxy}`,
-      {
-        proxy: true,
-      },
-    );
-    auth.addMethod("ANY", authIntegration);
-    auth.addProxy({
-      defaultIntegration: authProxyIntegration,
-      anyMethod: true,
-    });
-
-    // Product Service Routes
-    const products = api.root.addResource("products");
-    const productsIntegration = new apigateway.HttpIntegration(
-      `http://${productService.loadBalancer.loadBalancerDnsName}/products`,
-      {
-        proxy: true,
-      },
-    );
-    const productsProxyIntegration = new apigateway.HttpIntegration(
-      `http://${productService.loadBalancer.loadBalancerDnsName}/products/{proxy}`,
-      {
-        proxy: true,
-      },
-    );
-    products.addMethod("ANY", productsIntegration);
-    products.addProxy({
-      defaultIntegration: productsProxyIntegration,
-      anyMethod: true,
-    });
-
-    // Order Service Routes
-    const orders = api.root.addResource("orders");
-    const ordersIntegration = new apigateway.HttpIntegration(
-      `http://${orderService.loadBalancer.loadBalancerDnsName}/orders`,
-      {
-        proxy: true,
-      },
-    );
-    const ordersProxyIntegration = new apigateway.HttpIntegration(
-      `http://${orderService.loadBalancer.loadBalancerDnsName}/orders/{proxy}`,
-      {
-        proxy: true,
-      },
-    );
-    orders.addProxy({
-      defaultIntegration: ordersProxyIntegration,
-      anyMethod: true,
-    });
-    orders.addMethod("ANY", ordersIntegration);
-
-    // Inventory Service Routes
-    const inventory = api.root.addResource("inventory");
-    inventory.addProxy({
-      defaultIntegration: new apigateway.HttpIntegration(
-        `http://${inventoryService.loadBalancer.loadBalancerDnsName}/inventory/{proxy}`,
-        {
-          proxy: true,
-        },
+    frontendTaskDef.addContainer("FrontendContainer", {
+      image: ecs.ContainerImage.fromAsset(
+        path.join(__dirname, "../../../frontend"),
+        { platform: Platform.LINUX_AMD64 },
       ),
+      environment: {
+        VITE_IAM_API_URL: `http://${alb.loadBalancerDnsName}`,
+        VITE_PRODUCT_API_URL: `http://${alb.loadBalancerDnsName}`,
+        VITE_ORDER_API_URL: `http://${alb.loadBalancerDnsName}`,
+      },
+      portMappings: [{ containerPort: 80 }],
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "frontend-service" }),
     });
-    const inventoryIntegration = new apigateway.HttpIntegration(
-      `http://${inventoryService.loadBalancer.loadBalancerDnsName}/inventory`,
+
+    const frontendService = new ecs.FargateService(this, "FrontendService", {
+      cluster,
+      taskDefinition: frontendTaskDef,
+      desiredCount: 1,
+      minHealthyPercent: MIN_HEALTHY_PERCENT,
+    });
+
+    const frontendTargetGroup = new elbv2.ApplicationTargetGroup(
+      this,
+      "FrontendTargetGroup",
       {
-        proxy: true,
+        vpc,
+        port: 80,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+        targets: [frontendService],
+        healthCheck: {
+          path: "/",
+          interval: cdk.Duration.seconds(60),
+          timeout: cdk.Duration.seconds(30),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 5,
+        },
       },
     );
-    inventory.addMethod("ANY", inventoryIntegration);
 
-    // Frontend Service (created after API Gateway so we can reference api.url)
-    // API URLs are passed as runtime environment variables (not build args)
-    // The entrypoint.sh script generates env-config.js with these values
-    const frontendService =
-      new ecs_patterns.ApplicationLoadBalancedFargateService(
-        this,
-        "FrontendService",
-        {
-          cluster,
-          desiredCount: 1,
-          minHealthyPercent: MIN_HEALTHY_PERCENT,
-          taskImageOptions: {
-            image: ecs.ContainerImage.fromAsset(
-              path.join(__dirname, "../../../frontend"),
-              {
-                platform: Platform.LINUX_AMD64,
-              },
-            ),
-            environment: {
-              VITE_IAM_API_URL: `${api.url}`,
-              VITE_PRODUCT_API_URL: `${api.url}`,
-              VITE_ORDER_API_URL: `${api.url}`,
-            },
-
-            containerPort: 80,
-          },
-          ...commonTaskProps,
-          healthCheckGracePeriod: cdk.Duration.seconds(300),
-        },
-      );
-
-    frontendService.targetGroup.configureHealthCheck({
-      path: "/",
-      interval: cdk.Duration.seconds(60),
-      timeout: cdk.Duration.seconds(30),
-      healthyThresholdCount: 2,
-      unhealthyThresholdCount: 5,
+    // Default action: route everything else to frontend
+    listener.addTargetGroups("FrontendRouting", {
+      targetGroups: [frontendTargetGroup],
     });
 
-    new cdk.CfnOutput(this, "ApiUrl", { value: api.url });
-    new cdk.CfnOutput(this, "FrontendUrl", {
-      value: `http://${frontendService.loadBalancer.loadBalancerDnsName}`,
+    new cdk.CfnOutput(this, "LoadBalancerUrl", {
+      value: `http://${alb.loadBalancerDnsName}`,
     });
   }
 }
