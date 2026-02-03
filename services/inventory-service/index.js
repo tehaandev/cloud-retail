@@ -2,13 +2,40 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { query, initDB, pool } = require("./db");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Initialize Database
-initDB();
+// Initialize Database and Seed Inventory
+initDB().then(async () => {
+  try {
+    // Check if inventory table is empty
+    const result = await query("SELECT COUNT(*) as count FROM inventory");
+    const count = parseInt(result.rows[0].count, 10);
+
+    if (count === 0) {
+      console.log("Seeding initial inventory...");
+
+      // Read seed data from service-local seeds directory
+      const seedFilePath = path.join(__dirname, "seeds/products.json");
+      const seedData = JSON.parse(fs.readFileSync(seedFilePath, "utf8"));
+
+      for (const item of seedData) {
+        await query(
+          "INSERT INTO inventory (product_id, stock_quantity, reserved_quantity) VALUES ($1, $2, 0)",
+          [item.id, item.stock]
+        );
+        console.log(`Seeded inventory for product: ${item.name} (ID: ${item.id}, Stock: ${item.stock})`);
+      }
+      console.log("Inventory seeding complete.");
+    }
+  } catch (err) {
+    console.error("Error seeding inventory:", err);
+  }
+});
 
 // In-memory event tracking (use Redis in production for distributed systems)
 const processedEvents = new Map();

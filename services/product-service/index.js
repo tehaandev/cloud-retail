@@ -3,6 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
 const { docClient, initDB, TABLE_NAME } = require("./db");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(express.json());
@@ -12,19 +14,33 @@ app.use(cors());
 initDB().then(async () => {
   // Check if products exist, if not seed some
   try {
-     const data = await docClient.scan({ TableName: TABLE_NAME }).promise();
-     if (data.Items.length === 0) {
-       console.log("Seeding initial products...");
-       const seeds = [
-         { id: uuidv4(), name: "Cloud Hanger", description: "Keeps your clothes floating.", price: 19.99, stock: 100 },
-         { id: uuidv4(), name: "Serverless Mug", description: "Holds infinite coffee (stateless).", price: 12.50, stock: 50 },
-         { id: uuidv4(), name: "Kubernetes Kube", description: "A complex puzzle toy.", price: 45.00, stock: 20 },
-       ];
-       for (const item of seeds) {
-         await docClient.put({ TableName: TABLE_NAME, Item: item }).promise();
-       }
-       console.log("Seeding complete.");
-     }
+    const data = await docClient.scan({ TableName: TABLE_NAME }).promise();
+    for (const item of data.Items) {
+      await docClient
+        .delete({ TableName: TABLE_NAME, Key: { id: item.id } })
+        .promise();
+    }
+    if (data.Items.length === 0) {
+      console.log("Seeding initial products...");
+
+      // Read seed data from service-local seeds directory
+      const seedFilePath = path.join(__dirname, "seeds/products.json");
+      const seedData = JSON.parse(fs.readFileSync(seedFilePath, "utf8"));
+
+      for (const item of seedData) {
+        // Store only catalog data (no stock field)
+        const product = {
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          price: item.price,
+          createdAt: new Date().toISOString(),
+        };
+        await docClient.put({ TableName: TABLE_NAME, Item: product }).promise();
+        console.log(`Seeded product: ${product.name} (ID: ${product.id})`);
+      }
+      console.log("Product seeding complete.");
+    }
   } catch (err) {
     console.error("Error seeding data:", err);
   }
@@ -72,13 +88,12 @@ app.get("/products/:id", async (req, res) => {
 // 4. Create product (Mock Admin)
 app.post("/products", async (req, res) => {
   try {
-    const { name, description, price, stock } = req.body;
+    const { name, description, price } = req.body;
     const newProduct = {
       id: uuidv4(),
       name,
       description,
       price,
-      stock,
       createdAt: new Date().toISOString(),
     };
 
@@ -100,3 +115,4 @@ const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
   console.log(`Product Service running on port ${PORT}`);
 });
+

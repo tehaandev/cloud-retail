@@ -14,7 +14,7 @@ const query = (text, params) => pool.query(text, params);
 
 const initDB = async () => {
   const createTableQuery = `
-    DROP TABLE IF EXISTS inventory;
+    DROP TABLE IF EXISTS inventory;  
     CREATE TABLE IF NOT EXISTS inventory (
       product_id VARCHAR(255) PRIMARY KEY,
       stock_quantity INTEGER NOT NULL DEFAULT 0,
