@@ -1,7 +1,8 @@
-const { Pool } = require('pg');
+const { Pool } = require("pg");
 
 // Support both DATABASE_URL (local) and component-based (production)
-const connectionString = process.env.DATABASE_URL ||
+const connectionString =
+  process.env.DATABASE_URL ||
   `postgres://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`;
 
 const pool = new Pool({
@@ -13,6 +14,7 @@ const query = (text, params) => pool.query(text, params);
 
 const initDB = async () => {
   const createTableQuery = `
+    DROP TABLE IF EXISTS inventory;
     CREATE TABLE IF NOT EXISTS inventory (
       product_id VARCHAR(255) PRIMARY KEY,
       stock_quantity INTEGER NOT NULL DEFAULT 0,
@@ -62,18 +64,18 @@ const initDB = async () => {
 
   try {
     await query(createTableQuery);
-    console.log('Postgres Inventory table initialized');
+    console.log("Postgres Inventory table initialized");
 
     await query(addConstraintsQuery);
-    console.log('Inventory table constraints added');
+    console.log("Inventory table constraints added");
 
     await query(createTriggerFunction);
-    console.log('Inventory sanity check function created');
+    console.log("Inventory sanity check function created");
 
     await query(createTrigger);
-    console.log('Inventory sanity check trigger created');
+    console.log("Inventory sanity check trigger created");
   } catch (err) {
-    console.error('Error initializing DB:', err);
+    console.error("Error initializing DB:", err);
   }
 };
 
@@ -82,3 +84,4 @@ module.exports = {
   initDB,
   pool,
 };
+

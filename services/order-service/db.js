@@ -1,7 +1,8 @@
-const { Pool } = require('pg');
+const { Pool } = require("pg");
 
 // Support both DATABASE_URL (local) and component-based (production)
-const connectionString = process.env.DATABASE_URL ||
+const connectionString =
+  process.env.DATABASE_URL ||
   `postgres://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`;
 
 const pool = new Pool({
@@ -13,12 +14,13 @@ const query = (text, params) => pool.query(text, params);
 
 const initDB = async () => {
   const createTableQuery = `
-    CREATE TABLE IF NOT EXISTS orders (
+    DROP TABLE IF EXISTS orders;
+    CREATE TABLE orders (
       id SERIAL PRIMARY KEY,
       user_id VARCHAR(255) NOT NULL,
       product_id VARCHAR(255) NOT NULL,
-      quantity INTEGER NOT NULL,
-      total_price DECIMAL(10, 2) NOT NULL,
+      quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 10000),
+      total_price DECIMAL(10, 2) NOT NULL CHECK (total_price >= 0),
       status VARCHAR(50) DEFAULT 'pending',
       idempotency_key VARCHAR(255) UNIQUE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -46,12 +48,12 @@ const initDB = async () => {
 
   try {
     await query(createTableQuery);
-    console.log('Postgres Order table initialized');
+    console.log("Postgres Order table initialized");
 
     await query(addConstraintsQuery);
-    console.log('Order table constraints added');
+    console.log("Order table constraints added");
   } catch (err) {
-    console.error('Error initializing DB:', err);
+    console.error("Error initializing DB:", err);
   }
 };
 
@@ -60,3 +62,4 @@ module.exports = {
   initDB,
   pool,
 };
+
