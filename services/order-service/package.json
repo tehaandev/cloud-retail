@@ -14,7 +14,7 @@
   "type": "commonjs",
   "dependencies": {
     "aws-sdk": "^2.1693.0",
-    "axios": "^1.13.2",
+    "axios": "^1.13.4",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",

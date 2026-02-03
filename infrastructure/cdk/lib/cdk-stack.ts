@@ -288,6 +288,7 @@ export class CdkStack extends cdk.Stack {
         DB_PORT: "5432",
         DB_NAME: "order_db",
         PRODUCT_SERVICE_URL: `http://${alb.loadBalancerDnsName}`,
+        INVENTORY_SERVICE_URL: `http://${alb.loadBalancerDnsName}`,
         EVENT_BUS_NAME: eventBus.eventBusName,
         AWS_REGION: this.region,
       },

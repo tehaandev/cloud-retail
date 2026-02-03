@@ -20,12 +20,36 @@ const initDB = async () => {
       quantity INTEGER NOT NULL,
       total_price DECIMAL(10, 2) NOT NULL,
       status VARCHAR(50) DEFAULT 'pending',
+      idempotency_key VARCHAR(255) UNIQUE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `;
+
+  const addConstraintsQuery = `
+    DO $$
+    BEGIN
+      -- Add CHECK constraint for quantity if it doesn't exist
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'orders_quantity_check'
+      ) THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_quantity_check CHECK (quantity > 0 AND quantity <= 10000);
+      END IF;
+
+      -- Add CHECK constraint for total_price if it doesn't exist
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'orders_total_price_check'
+      ) THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_total_price_check CHECK (total_price >= 0);
+      END IF;
+    END $$;
+  `;
+
   try {
     await query(createTableQuery);
     console.log('Postgres Order table initialized');
+
+    await query(addConstraintsQuery);
+    console.log('Order table constraints added');
   } catch (err) {
     console.error('Error initializing DB:', err);
   }
@@ -34,4 +58,5 @@ const initDB = async () => {
 module.exports = {
   query,
   initDB,
+  pool,
 };
