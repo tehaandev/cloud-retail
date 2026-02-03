@@ -15,11 +15,6 @@ initDB().then(async () => {
   // Check if products exist, if not seed some
   try {
     const data = await docClient.scan({ TableName: TABLE_NAME }).promise();
-    for (const item of data.Items) {
-      await docClient
-        .delete({ TableName: TABLE_NAME, Key: { id: item.id } })
-        .promise();
-    }
     if (data.Items.length === 0) {
       console.log("Seeding initial products...");
 
