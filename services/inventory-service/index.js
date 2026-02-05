@@ -26,9 +26,11 @@ initDB().then(async () => {
       for (const item of seedData) {
         await query(
           "INSERT INTO inventory (product_id, stock_quantity, reserved_quantity) VALUES ($1, $2, 0)",
-          [item.id, item.stock]
+          [item.id, item.stock],
         );
-        console.log(`Seeded inventory for product: ${item.name} (ID: ${item.id}, Stock: ${item.stock})`);
+        console.log(
+          `Seeded inventory for product: ${item.name} (ID: ${item.id}, Stock: ${item.stock})`,
+        );
       }
       console.log("Inventory seeding complete.");
     }
@@ -43,14 +45,24 @@ const processedEvents = new Map();
 // --- ROUTES ---
 
 // 1. Health Check
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "Inventory Service is healthy" });
+app.get("/health", async (req, res) => {
+  try {
+    await query("SELECT 1");
+    res.status(200).json({ status: "Inventory Service is healthy" });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ status: "Inventory Service is unhealthy", error: error.message });
+  }
 });
 
 // 2. Get stock by Product ID
 app.get("/inventory/:productId", async (req, res) => {
   try {
-    const result = await query("SELECT * FROM inventory WHERE product_id = $1", [req.params.productId]);
+    const result = await query(
+      "SELECT * FROM inventory WHERE product_id = $1",
+      [req.params.productId],
+    );
     const item = result.rows[0];
     if (!item) {
       return res.status(404).json({ message: "Product inventory not found" });
@@ -73,7 +85,7 @@ app.post("/inventory/reserve", async (req, res) => {
     if (!productId || !quantity || quantity <= 0) {
       return res.status(400).json({
         code: "VALIDATION_ERROR",
-        message: "productId and positive quantity are required"
+        message: "productId and positive quantity are required",
       });
     }
 
@@ -82,19 +94,20 @@ app.post("/inventory/reserve", async (req, res) => {
     // Lock the row for update to prevent race conditions
     const lockResult = await client.query(
       "SELECT * FROM inventory WHERE product_id = $1 FOR UPDATE",
-      [productId]
+      [productId],
     );
 
     if (lockResult.rows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({
         code: "PRODUCT_NOT_FOUND",
-        message: `Product ${productId} not found in inventory`
+        message: `Product ${productId} not found in inventory`,
       });
     }
 
     const inventory = lockResult.rows[0];
-    const availableStock = inventory.stock_quantity - inventory.reserved_quantity;
+    const availableStock =
+      inventory.stock_quantity - inventory.reserved_quantity;
 
     if (availableStock < quantity) {
       await client.query("ROLLBACK");
@@ -102,7 +115,7 @@ app.post("/inventory/reserve", async (req, res) => {
         code: "INSUFFICIENT_STOCK",
         message: `Insufficient stock. Available: ${availableStock}, Requested: ${quantity}`,
         available: availableStock,
-        requested: quantity
+        requested: quantity,
       });
     }
 
@@ -114,14 +127,14 @@ app.post("/inventory/reserve", async (req, res) => {
            updated_at = CURRENT_TIMESTAMP
        WHERE product_id = $2 AND version = $3
        RETURNING *`,
-      [quantity, productId, inventory.version]
+      [quantity, productId, inventory.version],
     );
 
     if (updateResult.rows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(409).json({
         code: "CONCURRENT_MODIFICATION",
-        message: "Inventory was modified by another request. Please retry."
+        message: "Inventory was modified by another request. Please retry.",
       });
     }
 
@@ -135,14 +148,14 @@ app.post("/inventory/reserve", async (req, res) => {
       reserved: true,
       available: newAvailable,
       productId: productId,
-      reservedQuantity: quantity
+      reservedQuantity: quantity,
     });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Error reserving stock:", error);
     res.status(500).json({
       code: "INTERNAL_ERROR",
-      message: "Error reserving stock"
+      message: "Error reserving stock",
     });
   } finally {
     client.release();
@@ -158,7 +171,7 @@ app.post("/inventory/confirm-reservation", async (req, res) => {
     if (!productId || !quantity || quantity <= 0) {
       return res.status(400).json({
         code: "VALIDATION_ERROR",
-        message: "productId and positive quantity are required"
+        message: "productId and positive quantity are required",
       });
     }
 
@@ -172,14 +185,14 @@ app.post("/inventory/confirm-reservation", async (req, res) => {
            updated_at = CURRENT_TIMESTAMP
        WHERE product_id = $2
        RETURNING *`,
-      [quantity, productId]
+      [quantity, productId],
     );
 
     if (result.rows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({
         code: "PRODUCT_NOT_FOUND",
-        message: `Product ${productId} not found in inventory`
+        message: `Product ${productId} not found in inventory`,
       });
     }
 
@@ -188,14 +201,14 @@ app.post("/inventory/confirm-reservation", async (req, res) => {
     res.status(200).json({
       message: "Reservation confirmed successfully",
       confirmed: true,
-      productId: productId
+      productId: productId,
     });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Error confirming reservation:", error);
     res.status(500).json({
       code: "INTERNAL_ERROR",
-      message: "Error confirming reservation"
+      message: "Error confirming reservation",
     });
   } finally {
     client.release();
@@ -211,7 +224,7 @@ app.post("/inventory/release-reservation", async (req, res) => {
     if (!productId || !quantity || quantity <= 0) {
       return res.status(400).json({
         code: "VALIDATION_ERROR",
-        message: "productId and positive quantity are required"
+        message: "productId and positive quantity are required",
       });
     }
 
@@ -224,14 +237,14 @@ app.post("/inventory/release-reservation", async (req, res) => {
            updated_at = CURRENT_TIMESTAMP
        WHERE product_id = $2
        RETURNING *`,
-      [quantity, productId]
+      [quantity, productId],
     );
 
     if (result.rows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({
         code: "PRODUCT_NOT_FOUND",
-        message: `Product ${productId} not found in inventory`
+        message: `Product ${productId} not found in inventory`,
       });
     }
 
@@ -240,14 +253,14 @@ app.post("/inventory/release-reservation", async (req, res) => {
     res.status(200).json({
       message: "Reservation released successfully",
       released: true,
-      productId: productId
+      productId: productId,
     });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Error releasing reservation:", error);
     res.status(500).json({
       code: "INTERNAL_ERROR",
-      message: "Error releasing reservation"
+      message: "Error releasing reservation",
     });
   } finally {
     client.release();
@@ -263,55 +276,66 @@ app.post("/inventory/webhook/order-created", async (req, res) => {
     if (!event_id || !product_id || !quantity) {
       return res.status(400).json({
         code: "VALIDATION_ERROR",
-        message: "event_id, product_id, and quantity are required"
+        message: "event_id, product_id, and quantity are required",
       });
     }
 
     // Check if this event was already processed (idempotency)
     if (processedEvents.has(event_id)) {
-      console.log(`[EVENT DUPLICATE] Event ${event_id} already processed. Returning success.`);
+      console.log(
+        `[EVENT DUPLICATE] Event ${event_id} already processed. Returning success.`,
+      );
       return res.status(200).json({
         message: "Event already processed",
         duplicate: true,
-        event_id
+        event_id,
       });
     }
 
-    console.log(`[EVENT CONSUMED] Processing event ${event_id} for order ${order_id}: product ${product_id}, quantity ${quantity}`);
+    console.log(
+      `[EVENT CONSUMED] Processing event ${event_id} for order ${order_id}: product ${product_id}, quantity ${quantity}`,
+    );
 
     // Confirm the reservation (moves from reserved to actual decrement)
     const confirmResponse = await new Promise((resolve, reject) => {
       // Make internal call to confirm-reservation endpoint
-      const http = require('http');
+      const http = require("http");
       const postData = JSON.stringify({ productId: product_id, quantity });
 
       const options = {
-        hostname: 'localhost',
+        hostname: "localhost",
         port: process.env.PORT || 3004,
-        path: '/inventory/confirm-reservation',
-        method: 'POST',
+        path: "/inventory/confirm-reservation",
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData)
-        }
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(postData),
+        },
       };
 
       const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+        res.on("end", () => {
           resolve({ status: res.statusCode, body: JSON.parse(data) });
         });
       });
 
-      req.on('error', reject);
+      req.on("error", reject);
       req.write(postData);
       req.end();
     });
 
     if (confirmResponse.status === 200) {
       // Mark event as processed with timestamp
-      processedEvents.set(event_id, { timestamp: Date.now(), order_id, product_id, quantity });
+      processedEvents.set(event_id, {
+        timestamp: Date.now(),
+        order_id,
+        product_id,
+        quantity,
+      });
 
       // Cleanup old events (keep last 10000 events or 1 hour old)
       if (processedEvents.size > 10000) {
@@ -323,21 +347,26 @@ app.post("/inventory/webhook/order-created", async (req, res) => {
         }
       }
 
-      console.log(`[EVENT SUCCESS] Inventory confirmed for product ${product_id}`);
+      console.log(
+        `[EVENT SUCCESS] Inventory confirmed for product ${product_id}`,
+      );
       return res.status(200).json({
         message: "Inventory updated successfully",
         event_id,
-        order_id
+        order_id,
       });
     } else {
-      console.error(`[EVENT FAILED] Failed to confirm reservation:`, confirmResponse.body);
+      console.error(
+        `[EVENT FAILED] Failed to confirm reservation:`,
+        confirmResponse.body,
+      );
       return res.status(confirmResponse.status).json(confirmResponse.body);
     }
   } catch (error) {
     console.error("[EVENT ERROR] Error processing webhook:", error);
     res.status(500).json({
       code: "INTERNAL_ERROR",
-      message: "Error updating inventory"
+      message: "Error updating inventory",
     });
   }
 });
@@ -347,3 +376,4 @@ const PORT = process.env.PORT || 3004;
 app.listen(PORT, () => {
   console.log(`Inventory Service running on port ${PORT}`);
 });
+

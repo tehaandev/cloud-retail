@@ -315,6 +315,25 @@ export class CdkStack extends cdk.Stack {
       minHealthyPercent: MIN_HEALTHY_PERCENT,
     });
 
+    // const orderScaling = orderService.autoScaleTaskCount({
+    //   minCapacity: 1, // Start with 1 task
+    //   maxCapacity: 10, // Scale up to 10 tasks during peak load
+    // });
+
+    //  // 2. Add CPU-based scaling policy
+    // orderScaling.scaleOnCpuUtilization("OrderCpuScaling", {
+    //   targetUtilizationPercent: 70, // Scale out when CPU > 70%, Scale in when < 70%
+    //   scaleInCooldown: cdk.Duration.seconds(60), // Wait 60s before scaling in again
+    //   scaleOutCooldown: cdk.Duration.seconds(60), // Wait 60s before scaling out again
+    // });
+
+    // // 3. (Optional) Add Memory-based scaling policy
+    // orderScaling.scaleOnMemoryUtilization("OrderMemoryScaling", {
+    //   targetUtilizationPercent: 70,
+    //   scaleInCooldown: cdk.Duration.seconds(60),
+    //   scaleOutCooldown: cdk.Duration.seconds(60),
+    // });
+
     const orderTargetGroup = new elbv2.ApplicationTargetGroup(
       this,
       "OrderTargetGroup",

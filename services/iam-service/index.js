@@ -21,8 +21,15 @@ const generateToken = (user) => {
 // --- ROUTES ---
 
 // 1. Health Check
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "IAM Service is healthy" });
+app.get("/health", async (req, res) => {
+  try {
+    await query("SELECT 1");
+    res.status(200).json({ status: "IAM Service is healthy" });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ status: "IAM Service is unhealthy", error: error.message });
+  }
 });
 
 // 2. Register Endpoint
